@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ticker
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -586,7 +587,7 @@ def ac_start_diagram(m: ACMotor, res):
                 s_nom=s_nom, M_nom=M_nom)
 
 
-POINT_LETTERS = list("абвгдежзилорсуф")   # без к, м, н, п: они заняты под k, m, n и «пуск»
+POINT_LETTERS = list("абвгдежзилорсуфхцчшэюя")   # без к, м, н, п: они заняты под k, m, n и «пуск»
 
 
 def plot_start_diagram(st, outdir):
@@ -618,6 +619,7 @@ def plot_start_diagram(st, outdir):
     ax.text(0, n0, "$n_0$", ha="right", va="center", fontsize=12)
 
     # точки: на Mпер — конец ступени j (j = 1…m), на Mп — начало ступени j (j = 1…m+1); штриховые горизонтали
+    assert 2 * m + 1 <= len(POINT_LETTERS), f"для {m} ступеней не хватает букв для точек диаграммы"
     names, it = {}, iter(POINT_LETTERS)
     for j in range(1, m + 2):
         names[("p", j)] = next(it)
@@ -712,10 +714,11 @@ def ac_transient(m: ACMotor, res, st):
     return dict(stages=stages, t_sum=t_sum, t_an=t_an, dev_pct=dev, M_i_start=Mi_n, M_i_end=Mi_k)
 
 
-def plot_transient(st, tr, outdir):
+def plot_transient(st, tr, outdir, m_nom_rpm):
+    """Рис. 4 методички: n = f(t) и M = f(t) на общей оси времени; подписи уровней, кривых и интервалов t_i."""
     n0, s_nom, M_nom, lam, m = st["n0"], st["s_nom"], st["M_nom"], st["lam"], st["n_st"]
     M_p, M_per, M_c = st["M_p"], st["M_per"], st["M_c"]
-    t0, T_all, N_all, M_all = 0.0, [], [], []
+    t0, T_all, N_all, M_all, edges = 0.0, [], [], [], [0.0]
     for s in tr["stages"]:
         t = np.linspace(0, s["t"], 200)
         ex = np.exp(-t / s["T"])
@@ -723,23 +726,321 @@ def plot_transient(st, tr, outdir):
         M_all.append(M_c * (1 - ex) + M_p * ex)
         T_all.append(t0 + t)
         t0 += s["t"]
+        edges.append(t0)
     T_all, N_all, M_all = map(np.concatenate, (T_all, N_all, M_all))
-    fig, (a, b) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
-    a.plot(T_all, N_all, "C0")
-    b.plot(T_all, M_all, "C3")
-    tt = 0.0
-    for s in tr["stages"]:
-        tt += s["t"]
+    t_end = edges[-1]
+
+    fig, (a, b) = plt.subplots(2, 1, figsize=(9, 8.5), sharex=True)
+    a.plot(T_all, N_all, "k", lw=1.4)
+    b.plot(T_all, M_all, "k", lw=1.4)
+    for x in edges[1:]:
         for ax in (a, b):
-            ax.axvline(tt, color="gray", ls="--", lw=.7)
-    a.set(ylabel="n, об/мин")
-    b.set(ylabel="M, Н·м", xlabel="t, с")
-    b.axhline(M_c, color="k", lw=.6)
-    b.axhline(M_per, color="gray", lw=.6)
+            ax.axvline(x, color="gray", ls=(0, (5, 4)), lw=0.8)
+
+    # уровни по оси моментов: Mп, Mпер, Mс (штриховые линии, подписи на оси)
+    for y in (M_p, M_per):
+        b.axhline(y, color="gray", ls=(0, (5, 4)), lw=0.8)
+    b.axhline(M_c, color="k", lw=1.0)
+    b.set_yticks([M_c, M_per, M_p])
+    b.set_yticklabels([r"$M_{\mathrm{с}}$", r"$M_{\mathrm{пер}}$", r"$M_{\mathrm{п}}$"], fontsize=12)
+    b.set_ylim(M_c - 0.06 * (M_p - M_c), M_p + 0.08 * (M_p - M_c))
+    b.text(edges[1] * 0.45, M_c + 0.88 * (M_p - M_c), "$M = f(t)$", fontsize=12, ha="left", va="center")
+
+    # уровни частоты вращения: n_i на концах ступеней, n_ном
+    st_levels = [s["n_end"] for s in tr["stages"][:-1]] + [m_nom_rpm]
+    names = [f"{v:.0f}" for v in st_levels]
+    span = max(st_levels)
+    for k in range(len(st_levels) - 1):
+        if (st_levels[k + 1] - st_levels[k]) < 0.03 * span:   # подписи слились бы — опускаем меньшую
+            names[k] = ""
+    n_ticks = st_levels
+    for y in n_ticks:
+        a.axhline(y, color="gray", ls=(0, (5, 4)), lw=0.6)
+    a.set_yticks(n_ticks)
+    a.set_yticklabels(names, fontsize=11)
+    a.set_ylim(0, 1.05 * max(n_ticks))
+    a.text(edges[1] * 0.35, 0.18 * max(n_ticks), "$n = f(t)$", fontsize=12, ha="left", va="center")
+
+    # подписи осей — горизонтально у концов осей, как в методичке
+    a.annotate("$n$, об/мин", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 10), textcoords="offset points",
+               ha="right", va="bottom", fontsize=12)
+    b.annotate("$M$, Н·м", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 10), textcoords="offset points",
+               ha="right", va="bottom", fontsize=12)
+    b.annotate("$t$, с", xy=(1, 0), xycoords="axes fraction", xytext=(8, 0), textcoords="offset points",
+               ha="left", va="center", fontsize=12)
+    b.set_xlim(0, t_end * 1.04)
+    raw = t_end / 10
+    mag = 10 ** math.floor(math.log10(raw))
+    step = min((c * mag for c in (1, 2, 2.5, 5, 10) if c * mag >= raw), default=mag)
+    ticks = np.arange(0, t_end * 1.04, step)
+    b.set_xticks(ticks)
+    b.set_xticklabels([fmt(x, 3) for x in ticks], fontsize=10)
     for ax in (a, b):
-        ax.grid(True, alpha=.3)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    # интервалы t_i: двусторонние стрелки под осью времени, подписи в два ряда, чтобы узкие не сливались
+    trans = b.get_xaxis_transform()
+    for k, s in enumerate(tr["stages"]):
+        x0, x1 = edges[k], edges[k + 1]
+        b.annotate("", xy=(x0, -0.15), xytext=(x1, -0.15), xycoords=trans, textcoords=trans,
+                   arrowprops=dict(arrowstyle="<|-|>", color="k", lw=1.0, shrinkA=0, shrinkB=0,
+                                   mutation_scale=8), annotation_clip=False)
+        narrow = (x1 - x0) < 0.06 * t_end
+        y_lab = -0.20 if not (narrow and k % 2) else -0.27
+        b.text((x0 + x1) / 2, y_lab, rf"$t_{{{k + 1}}}$", transform=trans, ha="center", va="center", fontsize=11,
+               clip_on=False)
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.2)
     fig.savefig(outdir / "fig_4_1.png", dpi=300)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------- раздел 5
+BETA_DC = 0.5         # β в L = β·U/(pп·ω·Iном): 0,6…0,25, 0,25 — компенсированные машины (как в образце 0,5)
+P_POLES_DC = 2        # число пар полюсов ДПТ: в Прил. 1 не указано, принято 2 (4 полюса), как в образце
+SETTLE = 20           # затухание огибающей до 1/20 = 5 %
+
+
+def dc_transient(m: DCMotor, nat):
+    """Раздел 5: электромеханический переходный процесс ДПТ при пуске от сети по естественной характеристике."""
+    log.section("5. Электромеханический переходный процесс ДПТ (пуск по естественной характеристике)")
+    U = log.data("tr5.U", "Напряжение", "U_{ном}", m.U_nom, "В", 3)
+    R = log.data("tr5.R", "Сопротивление якоря", "R_{я}", m.R_ya, "Ом", 3)
+    I_nom = log.data("tr5.I", "Номинальный ток", "I_{ном}", m.I_nom, "А", 4)
+    n_nom = log.data("tr5.n", "Номинальная частота вращения", "n_{ном}", m.n_nom, "об/мин", 4)
+    J = log.data("tr5.J", "Момент инерции", "J", m.J, "кг·м²", 3)
+    beta = log.data("tr5.beta", "Коэффициент β (0,6…0,25)", r"\beta", BETA_DC, "", 3,
+                    note="принят как в образце; 0,25 — для компенсированных машин")
+    p_pol = log.data("tr5.p", "Число пар полюсов", "p_{п}", P_POLES_DC, "", 2,
+                     note="в Прил. 1 не указано, принято 2 (4 полюса) — уточнить по паспорту Д-812")
+    M_nom, M_p, I_p, n0 = nat["M_nom"], nat["M_p"], nat["I_p"], nat["n0"]
+    M_c = log.step("tr5.Mc", "Момент сопротивления (как в разд. 3–4)", "M_{с}", "M_{ном}",
+                   fmt(M_nom, 5), M_nom, "Н·м", 5, ref="п. 5")
+    n_c = log.step("tr5.nc", "Установившаяся частота вращения при Mс", "n_{с}", "n_{ном}",
+                   fmt(n_nom), n_nom, "об/мин", 4, ref="п. 5")
+
+    L = log.step("tr5.L", "Индуктивность цепи якоря", "L",
+                 r"\frac{9,55 \beta U_{ном}}{p_{п} n_{ном} I_{ном}}",
+                 rf"\frac{{9,55 \cdot {fmt(beta)} \cdot {fmt(U)}}}{{{fmt(p_pol)} \cdot {fmt(n_nom)} \cdot {fmt(I_nom)}}}",
+                 9.55 * beta * U / (p_pol * n_nom * I_nom), "Гн", 4, ref="п. 5")
+    Te = log.step("tr5.Te", "Электромагнитная постоянная времени якоря", "T_{э}", r"\frac{L}{R_{я}}",
+                  rf"\frac{{{fmt(L)}}}{{{fmt(R)}}}", L / R, "с", 4, ref="п. 5")
+    Tm = log.step("tr5.Tm", "Механическая постоянная времени (nу = nном, Mик = Mп − Mс)", "T_{М}",
+                  r"\frac{J n_{ном}}{9,55 (M_{п} - M_{ном})}",
+                  rf"\frac{{{fmt(J)} \cdot {fmt(n_nom)}}}{{9,55 \cdot ({fmt(M_p, 5)} - {fmt(M_nom, 5)})}}",
+                  J * n_nom / (9.55 * (M_p - M_nom)), "с", 4, ref="п. 5")
+    assert abs(Tm - J * n0 / (9.55 * M_p)) / Tm < 1e-9     # = J·n0/(9,55·Mп): характеристика прямая
+
+    dt1 = log.step("tr5.dt", "Длительность 1-й части (якорь неподвижен, I растёт до Iном)", r"\Delta t",
+                   r"-T_{э} \ln\left(1 - \frac{I_{ном} R_{я}}{U_{ном}}\right)",
+                   rf"-{fmt(Te)} \cdot \ln\left(1 - \frac{{{fmt(I_nom)} \cdot {fmt(R)}}}{{{fmt(U)}}}\right)",
+                   -Te * math.log(1 - I_nom * R / U), "с", 4, ref="п. 5",
+                   note="из I = U/R·(1 − e^(−t/Tэ)) при I = Iном (M = Mс)")
+    D = log.step("tr5.D", "Дискриминант характеристического уравнения", "D",
+                 r"\frac{1}{4 T_{э}^2} - \frac{1}{T_{э} T_{М}}",
+                 rf"\frac{{1}}{{4 \cdot {fmt(Te)}^2}} - \frac{{1}}{{{fmt(Te)} \cdot {fmt(Tm)}}}",
+                 1 / (4 * Te ** 2) - 1 / (Te * Tm), "1/с²", 4, ref="п. 5")
+    out = dict(M_c=M_c, n_c=n_c, L=L, Te=Te, Tm=Tm, dt1=dt1, D=D, M_p=M_p, I_p=I_p, n0=n0,
+               n_nom=n_nom, I_nom=I_nom, M_nom=M_nom, U=U, R=R, J=J)
+    sq = math.sqrt(Te * Tm)
+    alpha = 1 / (2 * Te)
+    if D < 0:
+        out["kind"] = "колебательный"
+        log.text("Корни комплексные (D < 0) — колебательный процесс; расчёт по формулам Эйлера",
+                 r"p_{1,2} = -\frac{1}{2 T_{э}} \pm j \nu")
+        al = log.step("tr5.alpha", "Показатель затухания (Re p)", r"\delta", r"\frac{1}{2 T_{э}}",
+                      rf"\frac{{1}}{{2 \cdot {fmt(Te)}}}", alpha, "1/с", 4, ref="п. 5")
+        nu = log.step("tr5.nu", "Угловая частота колебаний", r"\nu",
+                      r"\sqrt{\frac{1}{T_{э} T_{М}} - \frac{1}{4 T_{э}^2}}",
+                      rf"\sqrt{{\frac{{1}}{{{fmt(Te)} \cdot {fmt(Tm)}}} - \frac{{1}}{{4 \cdot {fmt(Te)}^2}}}}",
+                      math.sqrt(1 / (Te * Tm) - 1 / (4 * Te ** 2)), "рад/с", 4, ref="п. 5")
+        A = log.step("tr5.A", "Амплитуда n", "A", r"\frac{n_{ном}}{\nu \sqrt{T_{э} T_{М}}}",
+                     rf"\frac{{{fmt(n_nom)}}}{{{fmt(nu)} \cdot \sqrt{{{fmt(Te)} \cdot {fmt(Tm)}}}}}",
+                     n_nom / (nu * sq), "об/мин", 4, ref="п. 5")
+        phi0 = log.step("tr5.phi0", "Фаза n: главное значение арксинуса (формула методички)", r"\varphi_0",
+                        r"\arcsin\left(-\nu \sqrt{T_{э} T_{М}}\right)",
+                        rf"\arcsin\left(-{fmt(nu)} \cdot \sqrt{{{fmt(Te)} \cdot {fmt(Tm)}}}\right)",
+                        math.asin(-nu * sq), "рад", 4, ref="п. 5")
+        phi = log.step("tr5.phi", "Фаза n: второй корень sin φ = −ν√(TэTМ), при котором n'(0) = 0", r"\varphi",
+                       r"-\pi - \varphi_0", rf"-\pi - ({fmt(phi0)})", -math.pi - phi0, "рад", 4, ref="п. 5",
+                       note="arcsin даёт только главное значение; якорь трогается без начальной скорости "
+                            "(n(0)=0 и n'(0)=0), этому удовлетворяет φ = −π − φ0 (знак cos φ отрицательный)")
+        B = log.step("tr5.B", "Амплитуда I", "B", r"\frac{I_{п} - I_{ном}}{\nu T_{э}}",
+                     rf"\frac{{{fmt(I_p, 5)} - {fmt(I_nom)}}}{{{fmt(nu)} \cdot {fmt(Te)}}}",
+                     (I_p - I_nom) / (nu * Te), "А", 4, ref="п. 5")
+        C = log.step("tr5.C", "Амплитуда M", "C", r"\frac{M_{п} - M_{ном}}{\nu T_{э}}",
+                     rf"\frac{{{fmt(M_p, 5)} - {fmt(M_nom, 5)}}}{{{fmt(nu)} \cdot {fmt(Te)}}}",
+                     (M_p - M_nom) / (nu * Te), "Н·м", 4, ref="п. 5")
+        log.text("Начальные фазы тока и момента", r"\psi = 0;\quad \gamma = 0")
+        f_n = lambda t: A * np.exp(-alpha * t) * np.sin(nu * t + phi) + n_nom
+        f_I = lambda t: B * np.exp(-alpha * t) * np.sin(nu * t) + I_nom
+        f_M = lambda t: C * np.exp(-alpha * t) * np.sin(nu * t) + M_nom
+        w = 2 * Te * nu
+        s1 = w / math.sqrt(1 + w * w)                            # sin(arctan(2·Te·ν))
+        t_M = log.step("tr5.tMmax", "Время 1-го максимума M и I (после начала вращения)", "t_{M\\,max}",
+                       r"\frac{\arctan(2 T_{э} \nu)}{\nu}",
+                       rf"\frac{{\arctan(2 \cdot {fmt(Te)} \cdot {fmt(nu)})}}{{{fmt(nu)}}}",
+                       math.atan(w) / nu, "с", 4, ref="п. 5", note="из dM/dt = 0: tg(νt) = 2·Tэ·ν")
+        M_max = log.step("tr5.Mmax", "Максимальный момент в переходном процессе", "M_{max}",
+                         r"M_{ном} + C e^{-\delta t_{M\,max}} \sin(\nu t_{M\,max})",
+                         rf"{fmt(M_nom, 5)} + {fmt(C)} \cdot e^{{-{fmt(alpha)} \cdot {fmt(t_M)}}} \cdot \sin({fmt(nu * t_M)})",
+                         float(f_M(t_M)), "Н·м", 5, ref="п. 5")
+        I_max = log.step("tr5.Imax", "Максимальный ток в переходном процессе", "I_{max}",
+                         r"I_{ном} + B e^{-\delta t_{M\,max}} \sin(\nu t_{M\,max})",
+                         rf"{fmt(I_nom)} + {fmt(B)} \cdot e^{{-{fmt(alpha)} \cdot {fmt(t_M)}}} \cdot \sin({fmt(nu * t_M)})",
+                         float(f_I(t_M)), "А", 5, ref="п. 5")
+        t_n = (math.atan(w) - phi) / nu
+        if t_n <= 0:
+            t_n += math.pi / nu
+        n_max = log.step("tr5.nmax", "Максимальная частота вращения (1-й заброс)", "n_{max}",
+                         r"n_{ном} + A e^{-\delta t} \sin(\nu t + \varphi)",
+                         rf"{fmt(n_nom)} + {fmt(A)} \cdot e^{{-{fmt(alpha)} \cdot {fmt(t_n)}}} \cdot \sin({fmt(nu * t_n + phi)})",
+                         float(f_n(t_n)), "об/мин", 4, ref="п. 5",
+                         note=f"при t = {fmt(t_n)} с (tg(νt+φ) = 2·Tэ·ν); n0 = {fmt(n0)} об/мин")
+        sigma = log.step("tr5.sigma", "Перерегулирование по скорости", r"\sigma",
+                         r"\frac{n_{max} - n_{ном}}{n_{ном}} \cdot 100",
+                         rf"\frac{{{fmt(n_max)} - {fmt(n_nom)}}}{{{fmt(n_nom)}}} \cdot 100",
+                         (n_max - n_nom) / n_nom * 100, "%", 4, ref="п. 5")
+        out.update(alpha=alpha, nu=nu, A=A, phi=phi, B=B, C=C, t_Mmax=t_M, M_max=M_max, I_max=I_max,
+                   t_nmax=t_n, n_max=n_max, sigma_pct=sigma)
+    else:
+        out["kind"] = "апериодический"
+        log.text("Корни вещественные (D ≥ 0) — апериодический процесс; формулы с гиперболическим синусом",
+                 r"\varepsilon = \sqrt{\frac{1}{4 T_{э}^2} - \frac{1}{T_{э} T_{М}}}")
+        eps = log.step("tr5.eps", "Параметр ε", r"\varepsilon", r"\sqrt{\frac{1}{4 T_{э}^2} - \frac{1}{T_{э} T_{М}}}",
+                       rf"\sqrt{{{fmt(D)}}}", math.sqrt(D), "1/с", 4, ref="п. 5")
+        A = log.step("tr5.A", "Амплитуда n", "A", r"\frac{n_{ном}}{\varepsilon \sqrt{T_{э} T_{М}}}",
+                     rf"\frac{{{fmt(n_nom)}}}{{{fmt(eps)} \cdot \sqrt{{{fmt(Te)} \cdot {fmt(Tm)}}}}}",
+                     n_nom / (eps * sq), "об/мин", 4, ref="п. 5")
+        phi = log.step("tr5.phi", "Начальная фаза n", r"\varphi", r"\mathrm{arsh}\left(-\varepsilon \sqrt{T_{э} T_{М}}\right)",
+                       rf"\mathrm{{arsh}}\left(-{fmt(eps)} \cdot \sqrt{{{fmt(Te)} \cdot {fmt(Tm)}}}\right)",
+                       math.asinh(-eps * sq), "рад", 4, ref="п. 5")
+        B = log.step("tr5.B", "Амплитуда I", "B", r"\frac{I_{п} - I_{ном}}{\varepsilon T_{э}}",
+                     rf"\frac{{{fmt(I_p, 5)} - {fmt(I_nom)}}}{{{fmt(eps)} \cdot {fmt(Te)}}}",
+                     (I_p - I_nom) / (eps * Te), "А", 4, ref="п. 5")
+        C = log.step("tr5.C", "Амплитуда M", "C", r"\frac{M_{п} - M_{ном}}{\varepsilon T_{э}}",
+                     rf"\frac{{{fmt(M_p, 5)} - {fmt(M_nom, 5)}}}{{{fmt(eps)} \cdot {fmt(Te)}}}",
+                     (M_p - M_nom) / (eps * Te), "Н·м", 4, ref="п. 5")
+        f_n = lambda t: A * np.exp(-alpha * t) * np.sinh(eps * t + phi) + n_nom
+        f_I = lambda t: B * np.exp(-alpha * t) * np.sinh(eps * t) + I_nom
+        f_M = lambda t: C * np.exp(-alpha * t) * np.sinh(eps * t) + M_nom
+        out.update(alpha=alpha, eps=eps, A=A, phi=phi, B=B, C=C)
+
+    t_set = log.step("tr5.tset", "Время переходного процесса (затухание огибающей до 5 %)", "t_{пп}",
+                     r"2 T_{э} \ln 20", rf"2 \cdot {fmt(Te)} \cdot \ln {SETTLE}",
+                     2 * Te * math.log(SETTLE), "с", 4, ref="п. 5")
+    out["t_set"] = t_set
+
+    # --- проверка: численное решение той же линейной модели (RK4) ---
+    #   Tэ·dM/dt = Mп(1 − n/n0) − M;   (J/9,55)·dn/dt = M − Mс;   M(0) = Mс, n(0) = 0
+    dt = 2e-5
+    steps = int(1.2 * t_set / dt)
+    x = np.array([M_nom, 0.0])
+
+    def rhs(v):
+        return np.array([(M_p * (1 - v[1] / n0) - v[0]) / Te, 9.55 * (v[0] - M_c) / J])
+
+    tt = np.arange(steps + 1) * dt
+    num = np.empty((steps + 1, 2))
+    num[0] = x
+    for k in range(steps):
+        k1 = rhs(x)
+        k2 = rhs(x + dt / 2 * k1)
+        k3 = rhs(x + dt / 2 * k2)
+        k4 = rhs(x + dt * k3)
+        x = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        num[k + 1] = x
+    dev_n = float(np.max(np.abs(f_n(tt) - num[:, 1]))) / n_nom * 100
+    dev_M = float(np.max(np.abs(f_M(tt) - num[:, 0]))) / float(np.max(np.abs(f_M(tt) - M_nom))) * 100
+    print(f"      Проверка численным решением (RK4): max|Δn|/nном = {dev_n:.2f} %, "
+          f"max|ΔM|/амплитуды = {dev_M:.2f} %")
+    out.update(dev_n_pct=dev_n, dev_M_pct=dev_M)
+
+    # --- кривые для графика (в одной шкале времени: 1-я часть + 2-я часть) ---
+    t1 = np.linspace(0, dt1, 60)
+    t2 = np.linspace(0, 1.1 * t_set, 4000)
+    curves = dict(
+        t=np.concatenate([t1, dt1 + t2]),
+        n=np.concatenate([np.zeros_like(t1), f_n(t2)]),
+        M=np.concatenate([M_p * (1 - np.exp(-t1 / Te)) * (M_nom / (M_p * (1 - math.exp(-dt1 / Te)))), f_M(t2)]),
+        I=np.concatenate([U / R * (1 - np.exp(-t1 / Te)), f_I(t2)]))
+    return out, curves
+
+
+def plot_dc_transient(tr, curves, outdir):
+    """Рис. 5 методички: а) механическая характеристика; в) колебательный (или б) апериодический) процесс."""
+    n0, n_c, M_c, M_p, dt1 = tr["n0"], tr["n_c"], tr["M_c"], tr["M_p"], tr["dt1"]
+    t, n, M = curves["t"], curves["n"], curves["M"]
+    fig = plt.figure(figsize=(14, 8))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.5], hspace=0.12, wspace=0.28)
+    arrow = dict(arrowstyle="-|>", color="k", lw=1.2, shrinkA=0, shrinkB=0)
+
+    # а) механическая характеристика
+    a = fig.add_subplot(gs[:, 0])
+    a.plot([0, M_p], [n0, 0], "k", lw=1.6)
+    a.plot([0, M_p], [n0, n0], color="gray", ls=(0, (5, 4)), lw=0.9)
+    a.plot([0, M_p], [n_c, n_c], color="gray", ls=(0, (5, 4)), lw=0.9)
+    a.plot([M_c, M_c], [0, n0], "k", lw=1.0)
+    a.plot([M_c], [n_c], "ko", ms=4)
+    a.set_xlim(0, 1.08 * M_p)
+    a.set_ylim(0, 1.12 * n0)
+    for sp in ("top", "right"):
+        a.spines[sp].set_visible(False)
+    a.set_yticks([n_c, n0])
+    a.set_yticklabels([])
+    a.text(-0.01 * M_p, n0 + 0.025 * n0, f"$n_0 = {fmt(n0, 4)}$", ha="right", va="center", fontsize=11)
+    a.text(-0.01 * M_p, n_c - 0.045 * n0, f"$n_c = {fmt(n_c, 4)}$", ha="right", va="center", fontsize=11)
+    a.set_xticks([M_c, M_p])
+    a.set_xticklabels([f"$M_с = {fmt(M_c, 3)}$", f"$M_п = {fmt(M_p, 5)}$"], fontsize=10)
+    a.annotate("$n$, об/мин", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 10), textcoords="offset points",
+               ha="right", va="bottom", fontsize=12)
+    a.annotate("$M$, Н·м", xy=(1, 0), xycoords="axes fraction", xytext=(8, 0), textcoords="offset points",
+               ha="left", va="center", fontsize=12)
+    a.set_title("а)", loc="left", fontsize=12, style="italic")
+
+    # в) переходный процесс: n(t), M(t) на общей оси времени
+    b = fig.add_subplot(gs[0, 1])
+    c = fig.add_subplot(gs[1, 1], sharex=b)
+    b.plot(t, n, "k", lw=1.4)
+    b.axhline(n0, color="gray", ls=(0, (5, 4)), lw=0.9)
+    b.axhline(n_c, color="gray", ls="-", lw=0.7)
+    b.set_ylim(min(0, n.min()) - 0.02 * n.max(), 1.08 * n.max())
+    b.set_yticks([n_c])
+    b.set_yticklabels([])
+    b.text(-0.012 * t.max(), n_c - 0.05 * n.max(), f"$n_c = {fmt(n_c, 4)}$", ha="right", va="center", fontsize=10)
+    b.text(-0.012 * t.max(), n0 + 0.05 * n.max(), f"$n_0 = {fmt(n0, 4)}$", ha="right", va="center", fontsize=10)
+    b.text(0.12 * t.max(), 0.88 * n.max(), "$n = f(t)$", fontsize=12)
+    c.plot(t, M, "k", lw=1.4)
+    c.axhline(M_c, color="k", lw=0.7)
+    ymax = 1.1 * M.max()
+    ymin = min(M.min(), 0) * 1.1
+    c.set_ylim(ymin, ymax)
+    c.set_yticks([M_c])
+    c.set_yticklabels([])
+    c.text(-0.012 * t.max(), M_c, f"$M_с = {fmt(M_c, 3)}$", ha="right", va="center", fontsize=10)
+    c.annotate(f"$M_п = {fmt(M_p, 5)}$ Н·м — выше шкалы", xy=(0.02 * t.max(), ymax), xytext=(0.12 * t.max(), ymax * 0.97),
+               ha="left", va="top", fontsize=10, arrowprops=dict(arrowstyle="->", lw=0.8))
+    c.text(0.30 * t.max(), 0.55 * ymax, "$M = f(t)$", fontsize=12)
+    for ax in (b, c):
+        ax.axvline(dt1, color="gray", ls=(0, (5, 4)), lw=0.8)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+        ax.grid(True, alpha=0.25)
+    plt.setp(b.get_xticklabels(), visible=False)
+    c.set_xlim(0, t.max())
+    c.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: fmt(x, 3)))
+    c.annotate(r"$\Delta t$", xy=(dt1, ymin), xytext=(dt1 + 0.03 * t.max(), ymin + 0.05 * (ymax - ymin)),
+               ha="left", fontsize=11, arrowprops=dict(arrowstyle="->", lw=0.8))
+    c.annotate("$t$, с", xy=(1, 0), xycoords="axes fraction", xytext=(8, 0), textcoords="offset points",
+               ha="left", va="center", fontsize=12)
+    b.annotate("$n$, об/мин", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 8), textcoords="offset points",
+               ha="right", va="bottom", fontsize=12)
+    c.annotate("$M$, Н·м", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 8), textcoords="offset points",
+               ha="right", va="bottom", fontsize=12)
+    lab = "в)" if tr["kind"] == "колебательный" else "б)"
+    b.set_title(lab, loc="left", fontsize=12, style="italic")
+    fig.savefig(outdir / "fig_5_1.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -756,7 +1057,9 @@ def main():
     st = ac_start_diagram(ac, ac_res)
     tr = ac_transient(ac, ac_res, st)
     plot_start_diagram(st, OUT_DIR)
-    plot_transient(st, tr, OUT_DIR)
+    plot_transient(st, tr, OUT_DIR, ac.n_nom)
+    dc5, dc5_curves = dc_transient(dc, dc_nat)
+    plot_dc_transient(dc5, dc5_curves, OUT_DIR)
     import csv
     with open(OUT_DIR / "table_4.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
@@ -770,6 +1073,7 @@ def main():
         "ac": {"motor": ac.__dict__, **ac_res, "artificial": ac_arts},
         "start": st,
         "transient": tr,
+        "dc_transient": dc5,
     }
     (OUT_DIR / "results.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
