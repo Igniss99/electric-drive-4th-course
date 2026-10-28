@@ -26,7 +26,7 @@ import numpy as np
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-VARIANT = 10
+VARIANT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 10
 OUT_DIR = Path(__file__).parent / "out" / f"variant_{VARIANT}"
 
 # ---------------------------------------------------------------- константы
@@ -213,22 +213,32 @@ class ACMotor:            # Прил. 3
     J: float
 
 
-DC_MOTORS = {10: DCMotor("Д-812", 38, 565, 192, 0.0140, 7.0, 220)}
-AC_MOTORS = {10: ACMotor("4МТН225L6", 55, 970, 0.039, 0.13, 0.029, 0.135, 290, 1.02)}
+from variants_data import AC_GROUPS, AC_TABLE, DC_GROUPS, DC_TABLE  # noqa: E402
 
-# Прил. 2 и 4: множители по группам вариантов (здесь только 7–12, остальные добавить при расчёте других).
-DC_ART = {  # (название, Ф, R, U) — множители к номинальным
-    "7-12": [("Ф = 0,8Фном", 0.8, 1.0, 1.0),
-             ("R = 2,0Rя", 1.0, 2.0, 1.0),
-             ("U = 1,2Uном", 1.0, 1.0, 1.2)],
-}
-AC_ART = {  # (название, ключ параметра, множитель)
-    "7-12": [("U = 0,8Uном", "U", 0.8),
-             ("r1 = 2,0r1", "r1", 2.0),
-             ("xкз = 2,0xкз", "xkz", 2.0),
-             ("f1 = 2,0f1", "f1", 2.0),
-             ("pп = 3pп", "p", 3.0)],
-}
+DC_MOTORS = {r[0]: DCMotor(r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in DC_TABLE}
+AC_MOTORS = {r[0]: ACMotor(r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]) for r in AC_TABLE}
+
+
+def _k(x):
+    return fmt(x, 3)
+
+
+def dc_art_conditions(variant):
+    """Приложение 2: (название, k_Ф, k_R, k_U) для характеристик 1…3 группы, в которую входит вариант."""
+    kf, kr, ku = DC_GROUPS[group_of(variant)]
+    return [(f"Ф = {_k(kf)}Фном", kf, 1.0, 1.0),
+            (f"R = {_k(kr)}Rя", 1.0, kr, 1.0),
+            (f"U = {_k(ku)}Uном", 1.0, 1.0, ku)]
+
+
+def ac_art_conditions(variant):
+    """Приложение 4: (название, ключ параметра, множитель) для характеристик 1…5."""
+    ku, kr1, kx, kf, kp = AC_GROUPS[group_of(variant)]
+    return [(f"U = {_k(ku)}Uном", "U", ku),
+            (f"r1 = {_k(kr1)}r1", "r1", kr1),
+            (f"xкз = {_k(kx)}xкз", "xkz", kx),
+            (f"f1 = {_k(kf)}f1", "f1", kf),
+            (f"pп = {_k(kp)}pп" if kp != 1 else "pп", "p", float(kp))]
 
 
 def group_of(variant):
@@ -301,7 +311,7 @@ def dc_artificial(m: DCMotor, nat, tag, phi, rk, uk):
 def dc_run(m: DCMotor, variant):
     nat = dc_natural(m)
     arts = []
-    for i, (name, phi, rk, uk) in enumerate(DC_ART[group_of(variant)], 1):
+    for i, (name, phi, rk, uk) in enumerate(dc_art_conditions(variant), 1):
         log.section(f"1.2 ДПТ: искусственная характеристика {i}: {name}")
         log.text("Множители", rf"k_\Phi = {fmt(phi)};\ k_R = {fmt(rk)};\ k_U = {fmt(uk)}")
         arts.append(dict(name=name, **dc_artificial(m, nat, f"art{i}", phi, rk, uk)))
@@ -446,7 +456,7 @@ def ac_run(m: ACMotor, variant):
                           rf"{{\frac{{{fmt(s_nom)}}}{{{fmt(nat['sk_d'])}}} + \frac{{{fmt(nat['sk_d'])}}}{{{fmt(s_nom)}}} + 2 \cdot {fmt(nat['a'])} \cdot {fmt(nat['sk_d'])}}}",
                           float(klos(s_nom, nat["Mmax_d"], nat["sk_d"], nat["a"])), "Н·м", 4, ref="справочно")
     arts = []
-    for i, (name, key, mult) in enumerate(AC_ART[group_of(variant)], 1):
+    for i, (name, key, mult) in enumerate(ac_art_conditions(variant), 1):
         log.section(f"2.2 АД: искусственная характеристика {i}: {name}")
         q = dict(base)
         q[key] = base[key] * mult
@@ -496,8 +506,9 @@ def plot_ac(m, res, arts, outdir):
 
 # ---------------------------------------------------------------- раздел 3
 K_MP = 1.9            # Mп = 1,9·Mном: пусковой момент на 1-й ступени (как в образце)
-K_MPER = 1.1          # целевой Mпер = 1,1·Mном (допустимо 1,05…1,3·Mном по образцу)
+K_MPER = 1.05         # целевой Mпер = 1,05·Mном (нижняя граница диапазона 1,05…1,3·Mном; по замечанию преподавателя)
 MM_N0 = 200.0         # масштаб графического построения: n0 = 200 мм
+MM_M_P = 160.0        # масштаб построения от руки: Mп = 160 мм (по оси моментов)
 MM_READ = 0.5         # точность «измерения» отрезков линейкой, мм
 TOL_PCT = 10.0        # допустимое расхождение графического и аналитического расчёта, %
 
@@ -516,7 +527,7 @@ def ac_start_diagram(m: ACMotor, res):
     assert M_p < nat["Mmax_d"]
     Mper_t = log.step("st.Mper_t", "Желаемый момент переключения", "M_{пер}'", r"k_{пер} M_{ном}",
                       rf"{fmt(K_MPER)} \cdot {fmt(M_nom, 5)}", K_MPER * M_nom, "Н·м", 5, ref="п. 3",
-                      note="k_пер = 1,1 из диапазона 1,05…1,3")
+                      note="k_пер = 1,05 — нижняя граница диапазона 1,05…1,3")
     R_p = log.step("st.Rp", "Полное приведённое сопротивление цепи ротора при пуске", "R_{п}",
                    r"\frac{r_2' M_{ном}}{s_{ном} M_{п}}",
                    rf"\frac{{{fmt(r2p)} \cdot {fmt(M_nom, 5)}}}{{{fmt(s_nom)} \cdot {fmt(M_p, 5)}}}",
@@ -582,30 +593,67 @@ def ac_start_diagram(m: ACMotor, res):
                  rf"\frac{{|{fmt(r_g)} - {fmt(Rd[i - 1])}|}}{{{fmt(Rd[i - 1])}}} \cdot 100", d, "%", 3,
                  ref="проверка 5–10 %")
     assert max(dev) <= TOL_PCT, f"расхождение {max(dev):.1f} % > {TOL_PCT} %"
+    # --- координаты точек диаграммы (для построения от руки): M, n и положение в миллиметрах
+    names, it = {}, iter(POINT_LETTERS)
+    assert 2 * n_st + 1 <= len(POINT_LETTERS), f"для {n_st} ступеней не хватает букв для точек диаграммы"
+    for j in range(1, n_st + 2):
+        names[("p", j)] = next(it)
+        if j <= n_st:
+            names[("per", j)] = next(it)
+    points = []
+    for j in range(1, n_st + 2):
+        for kind, M in (("p", M_p), ("per", M_per)):
+            if kind == "per" and j > n_st:
+                continue
+            n_val = n0 * (1 - s_nom * lam ** (n_st + 1 - j) * M / M_nom)
+            n_val = 0.0 if abs(n_val) < 1e-9 else n_val   # n = 0 в точке «а» без ошибки округления
+            points.append(dict(name=names[(kind, j)], char=j, M=M, n=n_val,
+                               x_mm=M / M_p * MM_M_P, y_mm=n_val * kmm))
+    l_mm = [Rd_gr[i] / m2 for i in range(n_st)]
     return dict(M_c=M_c, M_p=M_p, M_per=M_per, R_p=R_p, lam=lam, n_calc=n_calc, n_st=n_st,
                 Rd=Rd, Rd_rotor=Rd_rotor, Rd_graph=Rd_gr, dev_pct=dev, m2=m2, r2p=r2p, n0=n0,
-                s_nom=s_nom, M_nom=M_nom)
+                s_nom=s_nom, M_nom=M_nom, points=points, l_mm=l_mm, l_zhk_mm=r2p / m2,
+                mm_n0=MM_N0, mm_Mp=MM_M_P)
 
 
 POINT_LETTERS = list("абвгдежзилорсуфхцчшэюя")   # без к, м, н, п: они заняты под k, m, n и «пуск»
 
 
+def _nice_step(span, target=10):
+    raw = span / target
+    mag = 10 ** math.floor(math.log10(raw))
+    return min(c * mag for c in (1, 2, 2.5, 5, 10) if c * mag >= raw)
+
+
 def plot_start_diagram(st, outdir):
-    """Рис. 3 методички: пусковая диаграмма для линейных характеристик (по моменту), обозначения точек как в оригинале."""
+    """Рис. 3 методички: пусковая диаграмма для линейных характеристик (по моменту) с размеченными шкалами."""
     n0, s_nom, M_nom, lam, m = st["n0"], st["s_nom"], st["M_nom"], st["lam"], st["n_st"]
     M_p, M_per, M_c = st["M_p"], st["M_per"], st["M_c"]
     n_at = lambda j, M: n0 * (1 - s_nom * lam ** (m + 1 - j) * M / M_nom)   # характеристика j, j = 1…m+1
+    pts = {(q["char"], "p" if abs(q["M"] - M_p) < 1e-9 else "per"): q for q in st["points"]}
 
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.set_xlim(-0.04 * M_p, 1.16 * M_p)
-    ax.set_ylim(-0.12 * n0, 1.1 * n0)
+    fig, ax = plt.subplots(figsize=(11, 10.5))
+    ax.set_xlim(-0.06 * M_p, 1.42 * M_p)
+    ax.set_ylim(-0.2 * n0, 1.1 * n0)
     ax.axis("off")
     arrow = dict(arrowstyle="-|>", color="k", lw=1.4, shrinkA=0, shrinkB=0)
     ax.annotate("", xy=(0, 1.08 * n0), xytext=(0, 0), arrowprops=arrow)
-    ax.annotate("", xy=(1.1 * M_p, 0), xytext=(0, 0), arrowprops=arrow)
+    ax.annotate("", xy=(1.12 * M_p, 0), xytext=(0, 0), arrowprops=arrow)
     ax.text(0.012 * M_p, 1.085 * n0, "$n$, об/мин", ha="left", va="center", fontsize=12)
-    ax.text(1.115 * M_p, 0.035 * n0, "$I$, А", ha="left", va="center", fontsize=12)
-    ax.text(1.115 * M_p, -0.015 * n0, "$M$, Н·м", ha="left", va="center", fontsize=12)
+    ax.text(1.135 * M_p, 0.03 * n0, "$I$, А", ha="left", va="center", fontsize=12)
+    ax.text(1.135 * M_p, -0.02 * n0, "$M$, Н·м", ha="left", va="center", fontsize=12)
+
+    # шкалы: деления и числа по осям M и n, тонкая сетка
+    sx, sy = _nice_step(1.1 * M_p), _nice_step(n0)
+    for x in np.arange(0, 1.1 * M_p + 1e-9, sx):
+        ax.plot([x, x], [-0.008 * n0, 0.008 * n0], "k", lw=0.9)
+        ax.plot([x, x], [0, n0], color="0.85", lw=0.5, zorder=0)
+        ax.text(x, -0.016 * n0, f"{x:.0f}", ha="center", va="top", fontsize=8, color="0.25")
+    for y in np.arange(0, n0 + 1e-9, sy):
+        ax.plot([-0.008 * M_p, 0.008 * M_p], [y, y], "k", lw=0.9)
+        ax.plot([0, 1.1 * M_p], [y, y], color="0.85", lw=0.5, zorder=0)
+        if abs(y - n0) > 1e-6:      # на уровне n0 стоит собственная подпись
+            ax.text(-0.012 * M_p, y, f"{y:.0f}", ha="right", va="center", fontsize=8, color="0.25")
 
     # естественная и реостатные характеристики: от (0, n0) до M = Mп
     for j in range(1, m + 2):
@@ -616,35 +664,47 @@ def plot_start_diagram(st, outdir):
     for x in (M_per, M_p):
         ax.plot([x, x], [0, n0], "k", lw=0.9, ls=(0, (5, 4)))
     ax.plot([0, M_p], [n0, n0], "k", lw=0.9, ls=(0, (5, 4)))
-    ax.text(0, n0, "$n_0$", ha="right", va="center", fontsize=12)
+    ax.text(-0.04 * M_p, n0, f"$n_0$ = {n0:.0f}", ha="right", va="center", fontsize=11)
 
-    # точки: на Mпер — конец ступени j (j = 1…m), на Mп — начало ступени j (j = 1…m+1); штриховые горизонтали
-    assert 2 * m + 1 <= len(POINT_LETTERS), f"для {m} ступеней не хватает букв для точек диаграммы"
-    names, it = {}, iter(POINT_LETTERS)
-    for j in range(1, m + 2):
-        names[("p", j)] = next(it)
-        if j <= m:
-            names[("per", j)] = next(it)
     for j in range(1, m + 1):                       # переход со ступени j на j+1: горизонталь (Mпер, j) → (Mп, j+1)
         ax.plot([M_per, M_p], [n_at(j, M_per)] * 2, "k", lw=0.9, ls=(0, (5, 4)))
     for j in range(1, m + 2):
-        yp = n_at(j, M_p)
-        ax.text(M_p + 0.012 * M_p, yp, names[("p", j)], style="italic", fontsize=12, ha="left", va="center")
+        q = pts[(j, "p")]
+        ax.plot([M_p], [q["n"]], "ko", ms=4)
+        ax.text(M_p + 0.012 * M_p, q["n"], q["name"], style="italic", fontsize=12, ha="left", va="center")
         if j <= m:
-            yq = n_at(j, M_per)
-            ax.text(M_per + 0.008 * M_p, yq + 0.018 * n0, names[("per", j)], style="italic", fontsize=12,
+            q2 = pts[(j, "per")]
+            ax.plot([M_per], [q2["n"]], "ko", ms=4)
+            ax.text(M_per + 0.008 * M_p, q2["n"] + 0.018 * n0, q2["name"], style="italic", fontsize=12,
                     ha="left", va="center")
     ax.text(M_p + 0.012 * M_p, n0, "$k$", fontsize=12, ha="left", va="center")
     ax.text(M_c - 0.012 * M_p, n0 + 0.005 * n0, "$m$", fontsize=12, ha="right", va="bottom")
     ax.text(M_per + 0.008 * M_p, n0 + 0.005 * n0, "$n$", fontsize=12, ha="left", va="bottom")
 
-    # подписи под осью: символы и (мелко) числовые значения
+    # отрезки l_i, l_жк на вертикали M = Mп (по ним считается R_дi = m2·l_i)
+    xd = 1.2 * M_p
+    dim = dict(arrowstyle="<|-|>", color="k", lw=0.9, shrinkA=0, shrinkB=0, mutation_scale=7)
+    levels = [n_at(j, M_p) for j in range(1, m + 2)] + [n0]
+    for idx in range(m + 1):          # idx = 0…m: между характеристиками j = idx+1 и idx+2 (последний — до k)
+        y0, y1 = levels[idx], levels[idx + 1]
+        if idx < m:
+            i = m - idx
+            lab, mm = rf"$l_{{{i}}}$", st["l_mm"][i - 1]
+        else:
+            lab, mm = r"$l_{жк}$", st["l_zhk_mm"]
+        ax.annotate("", xy=(xd, y0), xytext=(xd, y1), arrowprops=dim)
+        for y in (y0, y1):
+            ax.plot([M_p + 0.06 * M_p, xd + 0.015 * M_p], [y, y], color="0.6", lw=0.5)
+        ax.text(xd + 0.025 * M_p, (y0 + y1) / 2, lab + f" = {mm:.1f} мм".replace(".", ","),
+                ha="left", va="center", fontsize=10)
+
+    # подписи под осью: символы и числовые значения
     for x, lab, val, ha in [(M_c, r"$M_{\mathrm{с}},\ I_{\mathrm{с}}$", M_c, "right"),
                             (M_per, r"$M_{\mathrm{пер}},\ I_{\mathrm{пер}}$", M_per, "left"),
                             (M_p, r"$M_{\mathrm{п}},\ I_{\mathrm{п}}$", M_p, "center")]:
         dx = {"right": 0.006, "left": -0.006, "center": 0}[ha] * M_p
-        ax.text(x + dx, -0.04 * n0, lab, ha=ha, va="top", fontsize=12)
-        ax.text(x + dx, -0.085 * n0, f"{val:.0f} Н·м".replace(".", ","), ha=ha, va="top", fontsize=9, color="0.4")
+        ax.text(x + dx, -0.075 * n0, lab, ha=ha, va="top", fontsize=12)
+        ax.text(x + dx, -0.125 * n0, f"{val:.1f} Н·м".replace(".", ","), ha=ha, va="top", fontsize=9, color="0.3")
     fig.savefig(outdir / "fig_3_1.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -714,6 +774,10 @@ def ac_transient(m: ACMotor, res, st):
     return dict(stages=stages, t_sum=t_sum, t_an=t_an, dev_pct=dev, M_i_start=Mi_n, M_i_end=Mi_k)
 
 
+SETTLE_T_M = 4          # установившийся режим показываем на интервале 4·Tм (≈ 98 % от конечного значения)
+TAIL_MIN_SHARE = 0.2     # но не короче 20 % длительности ступенчатого разгона, чтобы участок был виден
+
+
 def plot_transient(st, tr, outdir, m_nom_rpm):
     """Рис. 4 методички: n = f(t) и M = f(t) на общей оси времени; подписи уровней, кривых и интервалов t_i."""
     n0, s_nom, M_nom, lam, m = st["n0"], st["s_nom"], st["M_nom"], st["lam"], st["n_st"]
@@ -727,8 +791,17 @@ def plot_transient(st, tr, outdir, m_nom_rpm):
         T_all.append(t0 + t)
         t0 += s["t"]
         edges.append(t0)
+    # установившийся режим: после t_m+1 двигатель на естественной характеристике плавно выходит на nном и Mс
+    last = tr["stages"][-1]
+    t_sw = edges[-1]                                   # конец ступенчатого разгона (M = Mпер)
+    tail = max(SETTLE_T_M * last["T"], TAIL_MIN_SHARE * t_sw)
+    tt = np.linspace(0, tail, 200)
+    ex = np.exp(-tt / last["T"])
+    N_all.append(last["n_y"] + (last["n_end"] - last["n_y"]) * ex)
+    M_all.append(M_c + (M_per - M_c) * ex)
+    T_all.append(t_sw + tt)
     T_all, N_all, M_all = map(np.concatenate, (T_all, N_all, M_all))
-    t_end = edges[-1]
+    t_end = t_sw + tail
 
     fig, (a, b) = plt.subplots(2, 1, figsize=(9, 8.5), sharex=True)
     a.plot(T_all, N_all, "k", lw=1.4)
@@ -779,6 +852,11 @@ def plot_transient(st, tr, outdir, m_nom_rpm):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
+    for ax in (a, b):
+        ax.axvspan(t_sw, t_end * 1.04, color="0.94", zorder=0)
+    a.text((t_sw + t_end) / 2, 0.45 * max(n_ticks), "установив-\nшийся\nрежим", ha="center", va="center",
+           fontsize=9, color="0.25")
+
     # интервалы t_i: двусторонние стрелки под осью времени, подписи в два ряда, чтобы узкие не сливались
     trans = b.get_xaxis_transform()
     for k, s in enumerate(tr["stages"]):
@@ -800,6 +878,7 @@ def plot_transient(st, tr, outdir, m_nom_rpm):
 BETA_DC = 0.5         # β в L = β·U/(pп·ω·Iном): 0,6…0,25, 0,25 — компенсированные машины (как в образце 0,5)
 P_POLES_DC = 2        # число пар полюсов ДПТ: в Прил. 1 не указано, принято 2 (4 полюса), как в образце
 SETTLE = 20           # затухание огибающей до 1/20 = 5 %
+SETTLE_SHOW = 2.0     # на графике показываем 2·tпп, чтобы был виден установившийся режим
 
 
 def dc_transient(m: DCMotor, nat):
@@ -959,7 +1038,7 @@ def dc_transient(m: DCMotor, nat):
 
     # --- кривые для графика (в одной шкале времени: 1-я часть + 2-я часть) ---
     t1 = np.linspace(0, dt1, 60)
-    t2 = np.linspace(0, 1.1 * t_set, 4000)
+    t2 = np.linspace(0, SETTLE_SHOW * t_set, 6000)
     curves = dict(
         t=np.concatenate([t1, dt1 + t2]),
         n=np.concatenate([np.zeros_like(t1), f_n(t2)]),
@@ -979,20 +1058,22 @@ def plot_dc_transient(tr, curves, outdir):
     # а) механическая характеристика
     a = fig.add_subplot(gs[:, 0])
     a.plot([0, M_p], [n0, 0], "k", lw=1.6)
+    a.plot(M, n, color="0.35", lw=1.0)   # динамическая характеристика n(M) за время переходного процесса
+    a.annotate("динамическая\nхарактеристика", xy=(float(M[np.argmax(n)]), float(n.max())), xytext=(0.45 * M_p, 0.95 * n.max()), fontsize=9, color="0.3", arrowprops=dict(arrowstyle="->", lw=0.7, color="0.3"))
     a.plot([0, M_p], [n0, n0], color="gray", ls=(0, (5, 4)), lw=0.9)
     a.plot([0, M_p], [n_c, n_c], color="gray", ls=(0, (5, 4)), lw=0.9)
     a.plot([M_c, M_c], [0, n0], "k", lw=1.0)
     a.plot([M_c], [n_c], "ko", ms=4)
     a.set_xlim(0, 1.08 * M_p)
-    a.set_ylim(0, 1.12 * n0)
+    a.set_ylim(0, 1.12 * max(n0, n.max()))
     for sp in ("top", "right"):
         a.spines[sp].set_visible(False)
     a.set_yticks([n_c, n0])
     a.set_yticklabels([])
-    a.text(-0.01 * M_p, n0 + 0.025 * n0, f"$n_0 = {fmt(n0, 4)}$", ha="right", va="center", fontsize=11)
-    a.text(-0.01 * M_p, n_c - 0.045 * n0, f"$n_c = {fmt(n_c, 4)}$", ha="right", va="center", fontsize=11)
+    a.text(-0.01 * M_p, n0 + 0.025 * n0, f"$n_0$ = {fmt(n0, 4)}", ha="right", va="center", fontsize=11)
+    a.text(-0.01 * M_p, n_c - 0.045 * n0, f"$n_c$ = {fmt(n_c, 4)}", ha="right", va="center", fontsize=11)
     a.set_xticks([M_c, M_p])
-    a.set_xticklabels([f"$M_с = {fmt(M_c, 3)}$", f"$M_п = {fmt(M_p, 5)}$"], fontsize=10)
+    a.set_xticklabels([f"$M_с$ = {fmt(M_c, 3)}", f"$M_п$ = {fmt(M_p, 5)}"], fontsize=10)
     a.annotate("$n$, об/мин", xy=(0, 1), xycoords="axes fraction", xytext=(-6, 10), textcoords="offset points",
                ha="right", va="bottom", fontsize=12)
     a.annotate("$M$, Н·м", xy=(1, 0), xycoords="axes fraction", xytext=(8, 0), textcoords="offset points",
@@ -1008,9 +1089,9 @@ def plot_dc_transient(tr, curves, outdir):
     b.set_ylim(min(0, n.min()) - 0.02 * n.max(), 1.08 * n.max())
     b.set_yticks([n_c])
     b.set_yticklabels([])
-    b.text(-0.012 * t.max(), n_c - 0.05 * n.max(), f"$n_c = {fmt(n_c, 4)}$", ha="right", va="center", fontsize=10)
-    b.text(-0.012 * t.max(), n0 + 0.05 * n.max(), f"$n_0 = {fmt(n0, 4)}$", ha="right", va="center", fontsize=10)
-    b.text(0.12 * t.max(), 0.88 * n.max(), "$n = f(t)$", fontsize=12)
+    b.text(-0.012 * t.max(), n_c - 0.05 * n.max(), f"$n_c$ = {fmt(n_c, 4)}", ha="right", va="center", fontsize=10)
+    b.text(-0.012 * t.max(), n0 + 0.05 * n.max(), f"$n_0$ = {fmt(n0, 4)}", ha="right", va="center", fontsize=10)
+    b.text(0.55 * t.max(), 0.12 * n.max(), "$n = f(t)$", fontsize=12)
     c.plot(t, M, "k", lw=1.4)
     c.axhline(M_c, color="k", lw=0.7)
     ymax = 1.1 * M.max()
@@ -1018,16 +1099,21 @@ def plot_dc_transient(tr, curves, outdir):
     c.set_ylim(ymin, ymax)
     c.set_yticks([M_c])
     c.set_yticklabels([])
-    c.text(-0.012 * t.max(), M_c, f"$M_с = {fmt(M_c, 3)}$", ha="right", va="center", fontsize=10)
-    c.annotate(f"$M_п = {fmt(M_p, 5)}$ Н·м — выше шкалы", xy=(0.02 * t.max(), ymax), xytext=(0.12 * t.max(), ymax * 0.97),
+    c.text(-0.012 * t.max(), M_c, f"$M_с$ = {fmt(M_c, 3)}", ha="right", va="center", fontsize=10)
+    c.annotate(f"$M_п$ = {fmt(M_p, 5)} Н·м — выше шкалы", xy=(0.02 * t.max(), ymax), xytext=(0.12 * t.max(), ymax * 0.97),
                ha="left", va="top", fontsize=10, arrowprops=dict(arrowstyle="->", lw=0.8))
     c.text(0.30 * t.max(), 0.55 * ymax, "$M = f(t)$", fontsize=12)
     for ax in (b, c):
         ax.axvline(dt1, color="gray", ls=(0, (5, 4)), lw=0.8)
+        ax.axvline(dt1 + tr["t_set"], color="gray", ls=(0, (5, 4)), lw=0.8)
+        ax.axvspan(dt1 + tr["t_set"], t.max(), color="0.94", zorder=0)
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
         ax.grid(True, alpha=0.25)
     plt.setp(b.get_xticklabels(), visible=False)
+    b.text(dt1 + tr["t_set"] + 0.02 * t.max(), 0.22 * n.max(), "установив-\nшийся\nрежим", fontsize=9, color="0.25", va="center")
+    b.text(0.5 * (dt1 + tr["t_set"]), 0.30 * n.max(), "переходный\nпроцесс", fontsize=9, color="0.25", ha="center", va="center")
+    c.annotate(r"$t_{пп}$", xy=(dt1 + tr["t_set"], 0), xycoords=c.get_xaxis_transform(), xytext=(0, -36), textcoords="offset points", ha="center", fontsize=11)
     c.set_xlim(0, t.max())
     c.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: fmt(x, 3)))
     c.annotate(r"$\Delta t$", xy=(dt1, ymin), xytext=(dt1 + 0.03 * t.max(), ymin + 0.05 * (ymax - ymin)),
